@@ -14,11 +14,11 @@ const double height{num_h_boxes * RECT_SIDE};
 
 
 //some vectors to hold information about the CA
-std::vector<std::vector<int> > cells;
-        
+std::vector<std::vector<double>> cells;
 
 // where we'll draw
 emp::web::Canvas canvas{width, height, "canvas"};
+emp::Random random;
 
 public:
 
@@ -30,18 +30,14 @@ public:
         doc << GetStepButton("Step");
 
         //fill the vectors with 0 to start
-        cells.resize(num_w_boxes, std::vector<int>(num_h_boxes, 0));
+        cells.resize(num_w_boxes, std::vector<double>(num_h_boxes, 0));
 
-        //showing how to set a cell to 'alive'
-        cells[1][0] = 1; 
-        cells[2][0] = 1; 
-        cells[3][0] = 1; 
-        cells[4][0] = 1; 
-        cells[4][1] = 1;
-        cells[4][2] = 1;
-        cells[3][3] = 1;
-        cells[0][1] = 1;
-        cells[0][3] = 1;
+        //begin by setting all cells at a random state between 0 and 1
+        for (int i = 0; i < num_w_boxes; i++) {
+            for (int j = 0; j < num_h_boxes; j++) {
+                cells[i][j] = random.GetDouble(0, 1);
+            }
+        }
     }
 
     /**
@@ -50,15 +46,42 @@ public:
      * @param x The x-coordinate of the cell in the grid.
      * @param y The y-coordinate of the cell in the grid.
      * 
-     * If the cell is dead (value 0), it is drawn as a white rectangle with a black outline.
-     * If the cell is alive (value 1), it is drawn as a black rectangle.
+     * Draws a cell at the specified position with color corresponding to the cell's value.
      */
     void DrawCell(int x, int y) {
-        if (cells[x][y] == 0) {
-            canvas.Rect(x * RECT_SIDE, y * RECT_SIDE, RECT_SIDE, RECT_SIDE, "white", "black");
-        } else {
-            canvas.Rect(x * RECT_SIDE, y * RECT_SIDE, RECT_SIDE, RECT_SIDE, "black", "black");
-        }
+        canvas.Rect(x * RECT_SIDE, y * RECT_SIDE, RECT_SIDE, RECT_SIDE, emp::ColorHSV(0, 0, cells[x][y]), "black");
+    }
+
+    /**
+     * @brief Wraps the x-coordinate around the grid to ensure toroidal behavior.
+     * 
+     * @param coord The x-coordinate to wrap.
+     * @return int The wrapped x-coordinate.
+     * 
+     * If coord is negative, it returns num_w_boxes - 1.
+     * If coord is equal to or greater than num_w_boxes, it wraps around to 0.
+     * Otherwise, it returns the original coordinate.
+     */
+    int wrapX(int coord) {
+        if (coord < 0) return num_w_boxes - 1; // Wrap negative to max
+        if (coord >= num_w_boxes) return 0;    // Wrap overflow to 0
+        return coord;
+    }
+
+    /**
+     * @brief Wraps the y-coordinate around the grid to ensure toroidal behavior.
+     * 
+     * @param coord The y-coordinate to wrap.
+     * @return int The wrapped y-coordinate.
+     * 
+     * If coord is negative, it returns num_h_boxes - 1.
+     * If coord is equal to or greater than num_h_boxes, it wraps around to 0.
+     * Otherwise, it returns the original coordinate.
+     */
+    int wrapY(int coord) {
+        if (coord < 0) return num_h_boxes - 1; // Wrap negative to max
+        if (coord >= num_h_boxes) return 0;    // Wrap overflow to 0
+        return coord;
     }
 
     /**
@@ -74,22 +97,10 @@ public:
     * Steps:
     * - Iterate through the 3x3 grid centered on the cell at (x, y).
     * - Skip the center cell itself.
-    * - Use wrapping functions (`wrapX` and `wrapY`) to handle edge cases.
+    * - Use functions to handle edge cases.
     * - Count the number of live cells (value 1) in the surrounding cells.
     */
     int FindNeighbors(int x, int y) {
-
-        auto wrapX = [this](int coord) { //
-            if (coord < 0) return num_w_boxes - 1; // Wrap negative to max
-            if (coord >= num_w_boxes) return 0;    // Wrap overflow to 0
-            return coord;
-        };
-
-        auto wrapY = [this](int coord) { //
-            if (coord < 0) return num_h_boxes - 1; // Wrap negative to max
-            if (coord >= num_h_boxes) return 0;    // Wrap overflow to 0
-            return coord;
-        };
 
         int LiveNeighbors = 0;
 
@@ -101,7 +112,7 @@ public:
                 int WrappedX = wrapX(i);
                 int WrappedY = wrapY(j);
 
-                if (cells[WrappedX][WrappedY] == 1) {
+                if (cells[WrappedX][WrappedY] >= 0.8) {
                     LiveNeighbors += 1;
                 }
             }
@@ -111,45 +122,57 @@ public:
     }
 
     /**
-     * @brief Determines the next state of a cell based on its current state and the number of live neighbors.
+     * @brief Updates the cell's intensity based on its current gradient and the number of live neighbors.
      * 
      * @param x The x-coordinate of the cell in the grid.
      * @param y The y-coordinate of the cell in the grid.
-     * @param LiveNeighbors The number of live neighbors surrounding the cell.
-     * @return int The new state of the cell (1 for alive, 0 for dead).
+     * @param liveNeighbors The number of neighboring cells that are considered "live" (value >= 0.8).
      * 
-     * Rules:
-     * - A live cell (value 1) survives if it has 2 or 3 live neighbors; otherwise, it dies.
-     * - A dead cell (value 0) becomes alive if it has exactly 3 live neighbors; otherwise, it remains dead.
+     * @return double The new intensity value for the cell.
+     * 
+     * This function implements a gradient-based update for the cell using a continuous range between 0 and 1.
+     * It operates as follows:
+     * - If the current intensity is between 0.05 and 0.95:
+     *   - If there are 2 or 3 live neighbors, the intensity increases by 0.05.
+     *   - Otherwise, the intensity decreases by 0.05 to simulate gradual fading.
+     * - If the intensity is outside of the [0.05, 0.95] range, a new random intensity between 0 and 1 is assigned.
      */
-    int UpdateCell(int x, int y, int LiveNeighbors) {
-        if (cells[x][y] == 1) {
-            return (LiveNeighbors == 2 || LiveNeighbors == 3) ? 1 : 0;
+    double UpdateCellGradient(int x, int y, int liveNeighbors) {
+        double current = cells[x][y];
+        if (current >= 0.05 && current <= 0.95) { 
+            if (liveNeighbors == 2 || liveNeighbors == 3) {
+                return current + 0.05;
+            } else {
+                return current - 0.05;
+            }
         } else {
-            return (LiveNeighbors == 3) ? 1 : 0;
+            current = random.GetDouble(0, 1); // Randomly set the cell to a new state
+            return current;
         }
+        return 0;
     }
 
     /**
      * @brief Updates the state of the grid and redraws the canvas for the next animation frame.
      * 
      * This method clears the canvas, redraws all cells based on their current state, and computes the next state
-     * of the grid using the rules of Conway's Game of Life. The updated grid is stored in a temporary vector
+     * of the grid using modified of Conway's Game of Life. The updated grid is stored in a temporary vector
      * and then replaces the current grid.
      */
     void DoFrame() override {
         canvas.Clear();
-        std::vector<std::vector<int>> updatedCells = cells;
+        std::vector<std::vector<double>> updatedCells = cells;
 
         for (int x = 0; x < num_w_boxes; x++) {
             for (int y = 0; y < num_h_boxes; y++) {
-                DrawCell(x, y); // Draw the current cell
-                int LiveNeighbors = FindNeighbors(x, y); // Count live neighbors
-                updatedCells[x][y] = UpdateCell(x, y, LiveNeighbors); // Update cell state
+                DrawCell(x, y); // Optionally update DrawCell to render gradient colors based on intensity.
+                int liveNeighbors = FindNeighbors(x, y);
+                // Use the gradient update rules instead of binary rules:
+                updatedCells[x][y] = UpdateCellGradient(x, y, liveNeighbors);
             }
         }
 
-        cells = updatedCells; // Replace the current grid with the updated grid
+        cells = updatedCells;
     }
 };
 
